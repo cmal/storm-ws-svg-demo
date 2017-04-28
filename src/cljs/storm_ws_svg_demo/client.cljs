@@ -1,32 +1,43 @@
 (ns storm-ws-svg-demo.client
   (:require
    [cljs.core.async :as async :refer (<! >! put! chan)]
+   [taoensso.encore :as encore :refer-macros (have have?)]
    [taoensso.timbre :as timbre]
    [taoensso.sente  :as sente :refer (cb-success?)]
+   [re-frame.core :refer [subscribe dispatch dispatch-sync]]
+   [cljs.reader :refer [read-string]]
    )
   (:require-macros
    [cljs.core.async.macros :as asyncm :refer (go go-loop)]
+   [storm-ws-svg-demo.core :refer [log]]
    )
 )
 
-(def output-el (.getElementById js/document "output"))
-
-(defn ->output! [fmt & args]
-  (let [msg (apply encore/format fmt args)]
-    (timbre/debug msg)
-    (aset output-el "value" (str "• " (.-value output-el) "\n" msg))
-    (aset output-el "scrollTop" (.-scrollHeight output-el))))
-
 (let [{:keys [chsk ch-recv send-fn state]}
-      (sente/make-channel-socket! "/chsk" ; Note the same path as before
-       {:type :ws})]
+      (sente/make-channel-socket!
+       "/chsk"
+       {:protocol "http:" :host "0.0.0.0:19009" :type :ws :packer :edn})]
   (def chsk       chsk)
   (def ch-chsk    ch-recv) ; ChannelSocket's receive channel
   (def chsk-send! send-fn) ; ChannelSocket's send API fn
   (def chsk-state state)   ; Watchable, read-only atom
   )
 
-;;;; Sente event handlers
+(defmulti push-evt-handler
+  "handle :chsk/recv type event"
+  first
+  )
+
+(defmethod push-evt-handler :node/loc
+  [msg]
+  (let [[evt-type s] msg
+        [id x y] (read-string s)]
+    (dispatch [:loc-change [id x y]])))
+
+(defmethod push-evt-handler :default
+  [msg]
+  (log "other type of msg:" msg))
+
 
 (defmulti -event-msg-handler
   "Multimethod to handle Sente `event-msg`s"
@@ -41,23 +52,30 @@
 (defmethod -event-msg-handler
   :default ; Default/fallback case (no other matching handler)
   [{:as ev-msg :keys [event]}]
-  (->output! "Unhandled event: %s" event))
+  (log "Unhandled event: %s" event))
 
 (defmethod -event-msg-handler :chsk/state
   [{:as ev-msg :keys [?data]}]
   (let [[old-state-map new-state-map] (have vector? ?data)]
     (if (:first-open? new-state-map)
-      (->output! "Channel socket successfully established!: %s" new-state-map)
-      (->output! "Channel socket state change: %s"              new-state-map))))
+      (log "Channel socket successfully established!: %s" new-state-map)
+      (log "Channel socket state change: %s"              new-state-map))))
 
 (defmethod -event-msg-handler :chsk/recv
   [{:as ev-msg :keys [?data]}]
-  (->output! "Push event from server: %s" ?data))
+  #_(log "Push event from server: %s" ?data)
+  (push-evt-handler ?data))
 
 (defmethod -event-msg-handler :chsk/handshake
   [{:as ev-msg :keys [?data]}]
   (let [[?uid ?csrf-token ?handshake-data] ?data]
-    (->output! "Handshake: %s" ?data)))
+    (log "Handshake: %s" ?data)))
+
+;; TODO Add your (defmethod -event-msg-handler <event-id> [ev-msg] <body>)s here...
+
+;;;; Sente event router (our `event-msg-handler` loop)
+
+;;;; Sente event handlers
 
 (defonce router_ (atom nil))
 (defn  stop-router! [] (when-let [stop-f @router_] (stop-f)))
@@ -65,7 +83,8 @@
   (stop-router!)
   (reset! router_
     (sente/start-client-chsk-router!
-      ch-chsk event-msg-handler)))
+     ch-chsk event-msg-handler))
+  (log "router restarted!"))
 
 (defn start! [] (start-router!))
 

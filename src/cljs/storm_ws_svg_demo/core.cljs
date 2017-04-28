@@ -7,6 +7,7 @@
    [storm-ws-svg-demo.subs]
    [storm-ws-svg-demo.views :as views]
    [storm-ws-svg-demo.config :as config]
+   [storm-ws-svg-demo.client :as client]
    )
   )
 
